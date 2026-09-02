@@ -2,7 +2,7 @@
 <html lang="sk">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Geocoder SK 6.0</title>
+<title>Geocoder SK 6.1</title>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
 body{font-family:Arial,sans-serif;max-width:1250px;margin:28px auto;padding:0 18px;background:#f5f7fa;color:#202124}
@@ -15,12 +15,12 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:8px;borde
 .green{color:#087f23}.yellow{color:#a56b00}.red{color:#b00020}.note{background:#fff8df;border-left:4px solid #d99b00;padding:12px;border-radius:5px;font-size:13px}
 </style></head>
 <body>
-<div class="card"><h1>Geocoder SK 6.0</h1>
+<div class="card"><h1>Geocoder SK 6.1</h1>
 <p>Hľadá adresu cez viacero presných kombinácií a vyhodnocuje kandidátov podľa jednotlivých častí adresy.</p>
 <div class="drop"><input id="file" type="file" accept=".xlsx,.xls,.csv"><p class="small">Vstupný stĺpec: <b>ADRESA</b></p></div>
 <div class="row"><label>Počet na test: <input id="limit" class="field" type="number" min="1" value="30" style="width:90px"></label></div>
 <div class="row"><button id="start" disabled>▶ SPUSTIŤ GEOKÓDOVANIE</button><button id="pause" class="secondary" disabled>Ⅱ POZASTAVIŤ</button><button id="export" disabled>⬇ EXPORT</button></div>
-<div class="note" style="margin-top:14px"><strong>Kódy:</strong> ku slovenskej obci sa dopĺňa kód obce (LAU2) a kód okresu. Kódy sa získavajú z verejného číselníkového zdroja; pri nejednoznačnej obci ostanú prázdne a výsledok pôjde na kontrolu.<br><br><strong>Geokódovanie:</strong> stále sa používa viacnásobné vyhľadávanie a kontrola obce/ulice/čísla/PSČ. Oficiálny Register adries MV SR je vedený ako referenčný zdroj adresných bodov; jeho verejné služby zahŕňajú aj získanie údajov podľa atribútov adresy a adresného bodu.</div><div class="note" style="margin-top:14px"><b>V5:</b> rozpozná aj formát „obec, číslo, PSČ, obec“, nepenalizuje automaticky nesprávne PSČ, hľadá aj adresy bez ulice a pri rozdiele obce/ulice označí výsledok na kontrolu.</div>
+<div class="note" style="margin-top:14px"><strong>Kódy:</strong> ku slovenskej obci sa dopĺňa kód obce (LAU2) a kód okresu. Kódy sa získavajú z verejného číselníkového zdroja; pri nejednoznačnej obci ostanú prázdne a výsledok pôjde na kontrolu.<br><br><strong>Geokódovanie:</strong> stále sa používa viacnásobné vyhľadávanie a kontrola obce/ulice/čísla/PSČ. Oficiálny Register adries MV SR je vedený ako referenčný zdroj adresných bodov; jeho verejné služby zahŕňajú aj získanie údajov podľa atribútov adresy a adresného bodu.</div><div class="note" style="margin-top:14px"><b>V6.1:</b> na jednu adresu sa používajú najviac 2 najdôležitejšie dopyty, aby test nebol zbytočne pomalý. <b>V5:</b> rozpozná aj formát „obec, číslo, PSČ, obec“, nepenalizuje automaticky nesprávne PSČ, hľadá aj adresy bez ulice a pri rozdiele obce/ulice označí výsledok na kontrolu.</div>
 </div>
 <div class="card" id="progressCard" style="display:none"><div id="progressText">Príprava...</div><progress id="progress" value="0" max="100"></progress>
 <div class="kpis"><div class="kpi">OK: <b id="ok">0</b></div><div class="kpi">Kontrola: <b id="review">0</b></div><div class="kpi">Nenájdené: <b id="fail">0</b></div><div class="kpi">Pozastavené: <b id="paused">nie</b></div></div></div>
@@ -166,14 +166,14 @@ $("start").onclick=async()=>{
  if(running)return;running=true;paused=false;output=[];$("start").disabled=true;$("pause").disabled=false;$("export").disabled=true;$("progressCard").style.display="block";$("resultsCard").style.display="none";
  let lim=Math.min(Math.max(parseInt($("limit").value||30),1),rows.length),ok=0,rev=0,fail=0;
  for(let i=0;i<lim;i++){await wp();let a=parse(rows[i].ADRESA),c=[];
-  for(const q of variants(a)){await wp();try{for(const r of await search(q)){const sc=score(r,a);c.push({r,sc,q})}}catch(e){}await sleep(1100);if(c.some(x=>x.sc.score>=98&&x.sc.exactHouse&&x.sc.exactStreet&&x.sc.exactCity))break}
+  for(const q of variants(a).slice(0,2)){await wp();try{for(const r of await search(q)){const sc=score(r,a);c.push({r,sc,q})}}catch(e){}await sleep(1100);if(c.some(x=>x.sc.score>=98&&x.sc.exactHouse&&x.sc.exactStreet&&x.sc.exactCity))break}
   c.sort((x,y)=>y.sc.score-x.sc.score);let best=c[0],status="NENÁJDENÉ";
   if(best){const s=best.sc;status=(s.score>=85&&s.exactHouse&&s.exactStreet&&s.exactCity)?"OK":(s.score>=50?"KONTROLA":"SLABÁ ZHODA")}
   const codes=await lookupMunicipalityCodes(a.city);
   let kodOkresu=codes.kod_okresu||"";
   if(best&&best.r.address){
     let dn=best.r.address.state_district||best.r.address.county||"";
-    dn=String(dn).replace(/^okres\\s+/i,"").trim();
+    dn=String(dn).replace(/^okres\s+/i,"").trim();
     kodOkresu=kodOkresu||districtCodeFromName(dn);
   }
   let o={...rows[i],
@@ -187,7 +187,7 @@ $("start").onclick=async()=>{
     match_reasons:best?best.sc.reasons.join(", "):"",
     geocode_status:status
   };
-  output.push(o);if(status==="OK")ok++;else if(status==="NENÁJDENÉ")fail++;else rev++;$("progress").value=(i+1)/lim*100;$("progressText").textContent=`Spracovanie ${i+1} / ${lim}`;$("ok").textContent=ok;$("review").textContent=rev;$("fail").textContent=fail;render()
+  output.push(o);if(status==="OK")ok++;else if(status==="NENÁJDENÉ")fail++;else rev++;$("progress").value=(i+1)/lim*100;$("progressText").textContent=`Spracovanie ${i+1} / ${lim} – vyhľadávanie adresy`;$("ok").textContent=ok;$("review").textContent=rev;$("fail").textContent=fail;render()
  }
  running=false;$("pause").disabled=true;$("start").disabled=false;$("export").disabled=!output.length;$("progressText").textContent=`Hotovo: ${output.length} z ${lim}`;
 };
