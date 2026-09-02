@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Geocoder SK</title>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<style>
+body{font-family:Arial,sans-serif;max-width:1100px;margin:35px auto;padding:0 20px;background:#f6f7f9;color:#222}
+.card{background:white;border-radius:14px;padding:24px;margin-bottom:18px;box-shadow:0 2px 12px #00000012}
+h1{margin-top:0}.drop{border:2px dashed #9aa3ad;border-radius:12px;padding:35px;text-align:center}
+button{padding:11px 18px;border:0;border-radius:8px;background:#1769aa;color:white;font-weight:bold;cursor:pointer}
+button:disabled{opacity:.5}.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:18px}
+progress{width:100%;height:20px} table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:9px;border-bottom:1px solid #ddd;text-align:left} th{background:#f0f2f4}
+.green{color:#087f23}.yellow{color:#a56b00}.red{color:#b00020}
+.small{font-size:13px;color:#666}.status{font-weight:bold}
+</style>
+</head>
+<body>
+<div class="card">
+<h1>Geocoder SK</h1>
+<p>Priradenie súradníc k adresám s automatickým vyhodnotením viacerých možností.</p>
+<div class="drop">
+<input id="file" type="file" accept=".xlsx,.xls,.csv">
+<p class="small">Použije sa stĺpec <b>retazec_Adresa_ok</b>.</p>
+</div>
+<div class="row">
+<button id="start" disabled>▶ SPUSTIŤ GEOKÓDOVANIE</button>
+<button id="export" disabled>⬇ EXPORT VÝSLEDKOV</button>
+</div>
+</div>
+
+<div class="card" id="progressCard" style="display:none">
+<div id="progressText">Príprava...</div>
+<progress id="progress" value="0" max="100"></progress>
+<p id="stats" class="small"></p>
+</div>
+
+<div class="card" id="resultsCard" style="display:none">
+<h2>Výsledky</h2>
+<div id="tableWrap"></div>
+</div>
+
+<script>
+let rows=[], output=[];
+
+const fileInput=document.getElementById('file');
+const start=document.getElementById('start');
+const exportBtn=document.getElementById('export');
+
+fileInput.onchange=async()=>{
+  const f=fileInput.files[0]; if(!f)return;
+  const data=await f.arrayBuffer();
+  const wb=XLSX.read(data,{type:'array'});
+  const ws=wb.Sheets[wb.SheetNames[0]];
+  rows=XLSX.utils.sheet_to_json(ws,{defval:""});
+  if(!rows.length || !("retazec_Adresa_ok" in rows[0])){
+    alert("V súbore sa nenašiel stĺpec retazec_Adresa_ok.");
+    start.disabled=true; return;
+  }
+  start.disabled=false;
+  alert(`Načítaných ${rows.length} riadkov.`);
+};
+
+function normalize(s){
+ return String(s||"").trim().replace(/\\s+/g," ").replace(/[,;]+/g,",")
+   .replace(/\\bSlovakia\\b/i,"Slovensko");
+}
+
+function variants(addr){
+ const a=normalize(addr);
+ const p=a.split(",").map(x=>x.trim()).filter(Boolean);
+ const out=[a];
+ if(p.length>=4){
+   // ulica, číslo, PSČ, mesto, štát
+   out.push([p[0],p[1],p[3],p[2],p[4]||"Slovensko"].filter(Boolean).join(", "));
+   out.push([p[1],p[0],p[3],p[2],p[4]||"Slovensko"].filter(Boolean).join(", "));
+ }
+ return [...new Set(out)];
+}
+
+async function geocode(q){
+ const url="https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&addressdetails=1&countrycodes=sk&accept-language=sk&q="+encodeURIComponent(q);
+ const r=await fetch(url,{headers:{"Accept":"application/json"}});
+ if(!r.ok) throw new Error("HTTP "+r.status);
+ return await r.json();
+}
+
+function scoreResult(r, original){
+ let s=0;
+ const d=r.address||{};
+ if(d.postcode && original.includes(d.postcode)) s+=35;
+ if(d.city || d.town || d.village) s+=25;
+ if(d.road) s+=25;
+ if(d.house_number) s+=15;
+ return Math.min(100,s);
+}
+
+start.onclick=async()=>{
+ document.getElementById('progressCard').style.display="block";
+ document.getElementById('resultsCard').style.display="none";
+ output=[]; start.disabled=true; exportBtn.disabled=true;
+ let ok=0, review=0, fail=0;
+
+ for(let i=0;i<rows.length;i++){
+   const original=rows[i]["retazec_Adresa_ok"];
+   let candidates=[];
+   try{
+     for(const v of variants(original)){
+       const res=await geocode(v);
+       for(const r of res){
+         const score=scoreResult(r,normalize(original));
+         candidates.push({r,score,query:v});
+       }
+       if(candidates.some(x=>x.score>=90)) break;
+       await new Promise(x=>setTimeout(x,1050));
+     }
+   }catch(e){}
+   candidates.sort((a,b)=>b.score-a.score);
+   const best=candidates[0];
+   const row={...rows[i],
+      latitude:best?Number(best.r.lat):"",
+      longitude:best?Number(best.r.lon):"",
+      geocode_confidence:best?best.score:0,
+      matched_address:best?best.r.display_name:"",
+      matched_query:best?best.query:"",
+      geocode_status:best?(best.score>=85?"OK":best.score>=60?"KONTROLA":"SLABÁ ZHODA"):"NENÁJDENÉ"
+   };
+   output.push(row);
+   if(!best)fail++; else if(best.score>=85)ok++; else review++;
+   document.getElementById('progress').value=((i+1)/rows.length)*100;
+   document.getElementById('progressText').textContent=`Spracovanie ${i+1} / ${rows.length}`;
+   document.getElementById('stats').textContent=`OK: ${ok} | Kontrola: ${review} | Nenájdené: ${fail}`;
+   if(i%10===0) render();
+ }
+ render(); start.disabled=false; exportBtn.disabled=false;
+};
+
+function render(){
+ const sample=output.slice(0,100);
+ let h="<table><tr><th>Adresa</th><th>Latitude</th><th>Longitude</th><th>Istota</th><th>Stav</th><th>Nájdená adresa</th></tr>";
+ for(const r of sample){
+   const cls=r.geocode_status==="OK"?"green":r.geocode_status==="NENÁJDENÉ"?"red":"yellow";
+   h+=`<tr><td>${esc(r.retazec_Adresa_ok)}</td><td>${r.latitude}</td><td>${r.longitude}</td><td>${r.geocode_confidence}%</td><td class="${cls} status">${r.geocode_status}</td><td>${esc(r.matched_address)}</td></tr>`;
+ }
+ h+="</table><p class='small'>Zobrazených prvých 100 výsledkov. Export obsahuje všetky riadky.</p>";
+ document.getElementById('resultsCard').style.display="block";
+ document.getElementById('tableWrap').innerHTML=h;
+}
+function esc(x){return String(x??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));}
+
+exportBtn.onclick=()=>{
+ const ws=XLSX.utils.json_to_sheet(output);
+ const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Geokódované");
+ XLSX.writeFile(wb,"geokodovane_adresy.xlsx");
+};
+</script>
+</body></html>
