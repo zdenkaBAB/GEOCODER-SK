@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Geocoder SK 8.2</title>
+<title>Geocoder SK 9.0</title>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
 body{font-family:Arial,sans-serif;max-width:1280px;margin:28px auto;padding:0 18px;background:#f5f7fa;color:#202124}
@@ -22,7 +22,7 @@ th{background:#f0f2f5;position:sticky;top:0}.green{color:#087f23}.yellow{color:#
 </head>
 <body>
 <div class="card">
-<h1>Geocoder SK 8.2</h1>
+<h1>Geocoder SK 9.0</h1>
 <p>Presnejšie geokódovanie s tvrdým vyradením kandidátov z nesprávnej obce a rozlíšením presnosti bodu.</p>
 
 <div class="drop">
@@ -43,7 +43,7 @@ th{background:#f0f2f5;position:sticky;top:0}.green{color:#087f23}.yellow{color:#
 </div>
 
 <div class="note" style="margin-top:14px">
-<b>V8.2:</b> výsledok z inej obce sa už nepoužije. Aplikácia rozlišuje <b>DOM</b>, <b>ULICA</b> a <b>OBEC</b>, akceptuje mestské časti (napr. Bratislava‑Petržalka), lepšie porovnáva názvy ulíc s iniciálami a pri obciach bez názvu ulice vie pracovať s formátom „obec, súpisné číslo, PSČ, obec“.
+<b>V9:</b> výsledok z inej obce sa už nepoužije. Aplikácia rozlišuje <b>DOM</b>, <b>ULICA</b> a <b>OBEC</b>, akceptuje mestské časti (napr. Bratislava‑Petržalka), lepšie porovnáva názvy ulíc s iniciálami a pri obciach bez názvu ulice vie pracovať s formátom „obec, súpisné číslo, PSČ, obec“.
 </div>
 </div>
 
@@ -125,12 +125,20 @@ function cityHierarchy(r){
 function cityMatch(target,r){
  const T=alnum(target); if(!T)return {level:0,label:""};
  const vals=cityHierarchy(r).map(alnum);
- if(vals.includes(T)) return {level:1,label:"obec presne"};
- // Bratislava-Petržalka: require both Bratislava and Petržalka somewhere in hierarchy/display
- const parts=T.split(" ").filter(x=>x.length>2);
  const disp=alnum(r.display_name||"");
+ if(vals.includes(T)) return {level:1,label:"obec presne"};
+
+ // Handle hyphenated administrative names such as "Havířov-Město".
+ const rawParts=fold(target).split(/[-,]/).map(x=>alnum(x)).filter(Boolean);
+ if(rawParts.length>1){
+   const core=rawParts[0];
+   const rest=rawParts.slice(1);
+   const coreOk=vals.includes(core) || disp.includes(core);
+   if(coreOk && rest.every(x=>disp.includes(x))) return {level:.96,label:"mestská/časť obce"};
+ }
+
+ const parts=T.split(" ").filter(x=>x.length>2);
  if(parts.length>=2 && parts.every(x=>disp.includes(x))) return {level:.93,label:"mestská časť"};
- // e.g. Havířov-Město may be split between city + district
  if(parts.length>=1 && parts.every(x=>disp.includes(x))) return {level:.85,label:"obec v hierarchii"};
  return {level:0,label:"iná obec"};
 }
@@ -196,10 +204,7 @@ function candidateEval(r,a){
 
 function makeQueries(a){
  const out=[], add=(q,kind)=>{q=clean(q);if(q&&!out.some(x=>x.q===q))out.push({q,kind})};
- const country=clean(a.country||"");
- const suffix=country ? `, ${country}` : "";
-
- // Do not reuse a.raw because it may contain a wrong country such as Slovakia.
+ const suffix=a.country?`, ${clean(a.country)}`:"";
  if(a.noStreet){
    if(a.house&&!isZeroHouse(a.house)&&a.city) add(`${a.house}, ${a.city}, ${a.zip}${suffix}`,"village-house");
    if(a.house&&!isZeroHouse(a.house)&&a.city) add(`${a.city} ${a.house}, ${a.zip}${suffix}`,"village-house");
@@ -233,56 +238,78 @@ async function nominatimStructured(a){
 }
 
 
-let CODEBOOK_READY=false;
 let CODEBOOK={};
+let CODEBOOK_READY=false;
 
-async function loadCodebook(){
-  if(CODEBOOK_READY) return;
-  const base="https://gis.scitanie.sk/server/rest/services/Hosted/Obyvatelia_Population/FeatureServer/52/query";
-  let offset=0, pageSize=2000, all=[];
-  try{
-    for(let page=0;page<3;page++){
-      const p=new URLSearchParams({
-        f:"json",
-        where:"1=1",
-        outFields:"kraj,okres,lau,nazov",
-        returnGeometry:"false",
-        resultRecordCount:String(pageSize),
-        resultOffset:String(offset)
-      });
-      const r=await fetch(base+"?"+p.toString());
-      if(!r.ok) break;
-      const j=await r.json();
-      const fs=j.features||[];
-      all=all.concat(fs);
-      if(!j.exceededTransferLimit || fs.length<pageSize) break;
-      offset+=fs.length;
-    }
-    for(const f of all){
-      const a=f.attributes||{};
-      const name=alnum(a.nazov||"");
-      if(name && a.lau){
-        CODEBOOK[name]={kod_obce:String(a.lau),kod_okresu:String(a.okres||""),kod_kraja:String(a.kraj||"")};
-      }
-    }
-    CODEBOOK_READY=true;
-  }catch(e){
-    // App continues; codes remain blank rather than guessed.
-  }
+async function loadOfficialCodebook(){
+ if(CODEBOOK_READY) return;
+ const url="https://data.statistics.sk/api/v2/dimension/sv5001rr/nuts15?lang=sk";
+ try{
+   const res=await fetch(url,{cache:"no-store"});
+   if(!res.ok) throw new Error("HTTP "+res.status);
+   const j=await res.json();
+
+   // JSON-stat dimension: category.label + category.index.
+   const dim=j?.dimension?.nuts15 || j?.dimension?.NUTS15 || j?.dimension;
+   const cat=dim?.category || {};
+   const labels=cat.label || {};
+   const index=cat.index || {};
+   const entries=Array.isArray(index)
+      ? index.map((code,i)=>[code,labels[code]||""])
+      : Object.keys(index).sort((a,b)=>index[a]-index[b]).map(code=>[code,labels[code]||""]);
+
+   for(const [code,label] of entries){
+     if(!/^SK[0-9A-Z]+$/i.test(code)) continue;
+     const name=String(label||"").replace(/\s*\([^)]*\)\s*$/,"").trim();
+     if(!name) continue;
+
+     if(code.length===6){
+       // LAU1 = district
+       CODEBOOK[alnum(name)]={type:"district",kod_okresu:code};
+     }else if(code.length>=10){
+       // LAU2 = municipality
+       const obj={type:"municipality",kod_obce:code,kod_okresu:code.slice(0,6)};
+       const key=alnum(name);
+       // Keep multiple same-name municipalities as an array.
+       if(CODEBOOK[key] && CODEBOOK[key].type==="municipality"){
+         if(!Array.isArray(CODEBOOK[key])) CODEBOOK[key]=[CODEBOOK[key]];
+         CODEBOOK[key].push(obj);
+       }else if(CODEBOOK[key] && CODEBOOK[key].type==="district"){
+         CODEBOOK[key]=obj;
+       }else{
+         CODEBOOK[key]=obj;
+       }
+     }
+   }
+   CODEBOOK_READY=true;
+ }catch(e){
+   console.warn("Oficiálny číselník sa nepodarilo načítať:",e);
+   CODEBOOK_READY=false;
+ }
 }
 
-function codesForResult(r,a){
-  const d=r?.address||{};
-  const names=[
-    d.city,d.town,d.village,d.municipality,d.city_district,d.suburb,d.borough
-  ].filter(Boolean);
-  // Prefer exact municipality from the geocoder result.
-  for(const n of names){
-    const c=CODEBOOK[alnum(n)];
-    if(c) return c;
-  }
-  // Fallback to input municipality.
-  return CODEBOOK[alnum(a.city||"")]||{kod_obce:"",kod_okresu:"",kod_kraja:""};
+function findOfficialCodes(a,best){
+ const candidates=[];
+ const r=best?.r||{};
+ const names=[
+   r.address?.municipality,r.address?.city,r.address?.town,r.address?.village,
+   r.address?.city_district,r.address?.suburb,r.address?.borough,a.city
+ ].filter(Boolean);
+
+ for(const n of names){
+   const x=CODEBOOK[alnum(n)];
+   if(x){
+     if(Array.isArray(x)){
+       // If several municipalities have same name, prefer the one matching the result display/ZIP.
+       const disp=alnum(r.display_name||"");
+       const hit=x.find(v=>disp.includes(alnum(n)));
+       candidates.push(hit||x[0]);
+     }else if(x.type==="municipality"){
+       candidates.push(x);
+     }
+   }
+ }
+ return candidates[0]||{kod_okresu:"",kod_obce:""};
 }
 
 $("pause").onclick=()=>{
@@ -295,8 +322,8 @@ $("start").onclick=async()=>{
  running=true;paused=false;output=[];
  $("start").disabled=true;$("pause").disabled=false;$("export").disabled=true;
  $("progressCard").style.display="block";$("resultsCard").style.display="none";
- $("progressText").textContent="Načítavam číselník obcí…";
- await loadCodebook();
+ $("progressText").textContent="Načítavam oficiálny číselník obcí…";
+ await loadOfficialCodebook();
  let limit=Math.min(Math.max(parseInt($("limit").value||30),1),rows.length),ok=0,review=0,fail=0;
 
  for(let i=0;i<limit;i++){
@@ -304,7 +331,7 @@ $("start").onclick=async()=>{
    const a=parseAddress(rows[i].ADRESA);
    let candidates=[];
 
-   // Structured query is particularly useful for standard street addresses.
+   // First pass: address with the supplied country.
    try{
      const rr=await nominatimStructured(a);
      for(const r of rr){
@@ -312,9 +339,9 @@ $("start").onclick=async()=>{
        if(ev.accepted)candidates.push({r,...ev,query:"štruktúrovaný dopyt"});
      }
    }catch(e){}
-   await sleep(1100);
+   await sleep(900);
 
-   for(const qq of makeQueries(a)){
+   for(const qq of makeQueries(a).slice(0,3)){
      await waitPause();
      try{
        const rr=await nominatimText(qq.q);
@@ -323,8 +350,25 @@ $("start").onclick=async()=>{
          if(ev.accepted)candidates.push({r,...ev,query:qq.q});
        }
      }catch(e){}
-     await sleep(1100);
+     await sleep(900);
      if(candidates.some(c=>c.precision==="DOM"&&c.score>=98))break;
+   }
+
+   // Second pass: no country restriction. This is critical for records where
+   // the source says "Slovakia" although the actual place is abroad (e.g. Havířov).
+   if(!candidates.some(c=>c.precision==="DOM"&&c.score>=90)){
+     for(const qq of makeQueries({...a,country:""}).slice(0,3)){
+       await waitPause();
+       try{
+         const rr=await nominatimText(qq.q);
+         for(const r of rr){
+           const ev=candidateEval(r,{...a,country:""});
+           if(ev.accepted)candidates.push({r,...ev,query:qq.q+" [bez krajiny]"});
+         }
+       }catch(e){}
+       await sleep(900);
+       if(candidates.some(c=>c.precision==="DOM"&&c.score>=98))break;
+     }
    }
 
    // Deduplicate by coordinate + display name, then rank precision first, score second.
@@ -345,7 +389,7 @@ $("start").onclick=async()=>{
      else status="KONTROLA";
    }
 
-   const territorial=best?codesForResult(best.r,a):{kod_obce:"",kod_okresu:"",kod_kraja:""};
+   const territorial=best?findOfficialCodes(a,best):{kod_okresu:"",kod_obce:""};
    const result={...rows[i],
       latitude:best?Number(best.r.lat):"",
       longitude:best?Number(best.r.lon):"",
