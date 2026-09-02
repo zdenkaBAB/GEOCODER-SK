@@ -1,0 +1,2 @@
+# GEOCODER-SK
+Geokódovanie adries
