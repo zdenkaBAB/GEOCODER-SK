@@ -3,38 +3,59 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Geocoder SK</title>
+<title>Geocoder SK 2.0</title>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
-body{font-family:Arial,sans-serif;max-width:1100px;margin:35px auto;padding:0 20px;background:#f6f7f9;color:#222}
-.card{background:white;border-radius:14px;padding:24px;margin-bottom:18px;box-shadow:0 2px 12px #00000012}
-h1{margin-top:0}.drop{border:2px dashed #9aa3ad;border-radius:12px;padding:35px;text-align:center}
-button{padding:11px 18px;border:0;border-radius:8px;background:#1769aa;color:white;font-weight:bold;cursor:pointer}
-button:disabled{opacity:.5}.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:18px}
-progress{width:100%;height:20px} table{width:100%;border-collapse:collapse;font-size:13px}
-th,td{padding:9px;border-bottom:1px solid #ddd;text-align:left} th{background:#f0f2f4}
-.green{color:#087f23}.yellow{color:#a56b00}.red{color:#b00020}
-.small{font-size:13px;color:#666}.status{font-weight:bold}
+:root{font-family:Arial,sans-serif}
+body{max-width:1200px;margin:28px auto;padding:0 18px;background:#f5f7fa;color:#202124}
+.card{background:#fff;border-radius:14px;padding:22px;margin-bottom:16px;box-shadow:0 2px 12px #0001}
+h1{margin:0 0 8px} h2{margin-top:0}
+.drop{border:2px dashed #9aa5b1;border-radius:12px;padding:28px;text-align:center}
+button{padding:10px 16px;border:0;border-radius:8px;background:#1769aa;color:#fff;font-weight:700;cursor:pointer}
+button.secondary{background:#6b7280} button.danger{background:#b42318}
+button:disabled{opacity:.45;cursor:not-allowed}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:14px}
+label{font-size:14px}.field{padding:9px;border:1px solid #c8cdd3;border-radius:7px}
+progress{width:100%;height:22px}.status{font-weight:700}.small{font-size:13px;color:#68707a}
+.kpis{display:flex;gap:12px;flex-wrap:wrap;margin-top:12px}.kpi{background:#f0f2f5;border-radius:10px;padding:10px 14px}
+table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:8px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}
+th{background:#f0f2f5;position:sticky;top:0}.green{color:#087f23}.yellow{color:#a56b00}.red{color:#b00020}
+.note{background:#fff8df;border-left:4px solid #d99b00;padding:12px;border-radius:5px;font-size:13px}
 </style>
 </head>
 <body>
 <div class="card">
-<h1>Geocoder SK</h1>
-<p>Priradenie súradníc k adresám s automatickým vyhodnotením viacerých možností.</p>
+<h1>Geocoder SK 2.0</h1>
+<p>Hľadanie súradníc podľa viacerých variantov adresy a porovnanie kandidátov.</p>
 <div class="drop">
 <input id="file" type="file" accept=".xlsx,.xls,.csv">
-<p class="small">Použije sa stĺpec <b>retazec_Adresa_ok</b>.</p>
+<p class="small">Použije sa stĺpec <b>ADRESA</b>. Ak sú v súbore dostupné aj štruktúrované stĺpce (ulica, obec, PSČ, číslo), aplikácia ich využije na zvýšenie presnosti.</p>
+</div>
+<div class="row">
+<label>Testovací počet:
+<input id="limit" class="field" type="number" min="1" value="30" style="width:90px">
+</label>
+<label><input id="onlyEmpty" type="checkbox" checked> spracovať iba vybrané/testovacie riadky</label>
 </div>
 <div class="row">
 <button id="start" disabled>▶ SPUSTIŤ GEOKÓDOVANIE</button>
-<button id="export" disabled>⬇ EXPORT VÝSLEDKOV</button>
+<button id="pause" class="secondary" disabled>Ⅱ POZASTAVIŤ</button>
+<button id="export" disabled>⬇ EXPORT</button>
+</div>
+<div class="note" style="margin-top:14px">
+<strong>Presnosť:</strong> aplikácia už nehodnotí iba prvý výsledok. Vytvára viac dopytov, porovnáva obec, ulicu, číslo domu a PSČ a zohľadňuje aj štruktúrované údaje zo súboru.
 </div>
 </div>
 
 <div class="card" id="progressCard" style="display:none">
 <div id="progressText">Príprava...</div>
 <progress id="progress" value="0" max="100"></progress>
-<p id="stats" class="small"></p>
+<div class="kpis">
+<div class="kpi">OK: <b id="ok">0</b></div>
+<div class="kpi">Kontrola: <b id="review">0</b></div>
+<div class="kpi">Nenájdené: <b id="fail">0</b></div>
+<div class="kpi">Pozastavené: <b id="paused">nie</b></div>
+</div>
 </div>
 
 <div class="card" id="resultsCard" style="display:none">
@@ -43,117 +64,162 @@ th,td{padding:9px;border-bottom:1px solid #ddd;text-align:left} th{background:#f
 </div>
 
 <script>
-let rows=[], output=[];
+let rows=[], output=[], running=false, paused=false;
 
-const fileInput=document.getElementById('file');
-const start=document.getElementById('start');
-const exportBtn=document.getElementById('export');
-
-fileInput.onchange=async()=>{
-  const f=fileInput.files[0]; if(!f)return;
+const $=id=>document.getElementById(id);
+$("file").onchange=async()=>{
+  const f=$("file").files[0]; if(!f)return;
   const data=await f.arrayBuffer();
-  const wb=XLSX.read(data,{type:'array'});
+  const wb=XLSX.read(data,{type:"array"});
   const ws=wb.Sheets[wb.SheetNames[0]];
   rows=XLSX.utils.sheet_to_json(ws,{defval:""});
-  if(!rows.length || !("retazec_Adresa_ok" in rows[0])){
-    alert("V súbore sa nenašiel stĺpec retazec_Adresa_ok.");
-    start.disabled=true; return;
+  if(!rows.length || !("ADRESA" in rows[0])){
+    alert("V súbore sa nenašiel stĺpec ADRESA.");
+    $("start").disabled=true; return;
   }
-  start.disabled=false;
-  alert(`Načítaných ${rows.length} riadkov.`);
+  $("start").disabled=false;
+  alert(`Načítaných ${rows.length} riadkov. Predvolene sa otestuje prvých ${$("limit").value}.`);
 };
 
-function normalize(s){
- return String(s||"").trim().replace(/\\s+/g," ").replace(/[,;]+/g,",")
-   .replace(/\\bSlovakia\\b/i,"Slovensko");
+function clean(s){
+ return String(s??"").trim().replace(/\s+/g," ").replace(/\s*,\s*/g,", ").replace(/,+$/,"");
 }
-
-function variants(addr){
- const a=normalize(addr);
- const p=a.split(",").map(x=>x.trim()).filter(Boolean);
- const out=[a];
- if(p.length>=4){
-   // ulica, číslo, PSČ, mesto, štát
-   out.push([p[0],p[1],p[3],p[2],p[4]||"Slovensko"].filter(Boolean).join(", "));
-   out.push([p[1],p[0],p[3],p[2],p[4]||"Slovensko"].filter(Boolean).join(", "));
+function norm(s){
+ return clean(s).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+   .replace(/[‐‑–—]/g,"-").replace(/\bslovakia\b/g,"slovensko");
+}
+function val(row, names){
+ for(const n of names){ if(row[n]!==undefined && clean(row[n])!=="") return clean(row[n]); }
+ return "";
+}
+function parseAddress(row){
+ const raw=clean(row["ADRESA"]);
+ const street=val(row,["IFS26_Ulica","Ulica","ulica"]);
+ const municipality=val(row,["IFS26_Obec","Obec","obec"]);
+ const zip=val(row,["IFS26_PSČ","PSČ","PSC","psc"]).replace(/\s/g,"");
+ const sup=val(row,["IFS26_Číslo súpisné","Číslo súpisné","supisne"]);
+ const ori=val(row,["IFS26_Číslo orientačné","Číslo orientačné","orientacne"]);
+ let house="";
+ if(sup && ori) house=`${sup}/${ori}`;
+ else house=ori||sup;
+ return {raw,street,municipality,zip,house};
+}
+function variants(row){
+ const a=parseAddress(row), out=[];
+ const add=x=>{x=clean(x); if(x && !out.includes(x))out.push(x)};
+ add(a.raw);
+ if(a.street&&a.house&&a.zip&&a.municipality){
+   add(`${a.street} ${a.house}, ${a.zip} ${a.municipality}, Slovakia`);
+   add(`${a.street}, ${a.house}, ${a.zip}, ${a.municipality}, Slovakia`);
+   add(`${a.street} ${a.house}, ${a.municipality}, ${a.zip}, Slovakia`);
  }
- return [...new Set(out)];
+ if(a.street&&a.house&&a.municipality){
+   add(`${a.street} ${a.house}, ${a.municipality}, Slovakia`);
+   add(`${a.municipality}, ${a.street} ${a.house}, Slovakia`);
+ }
+ if(a.street&&a.municipality) add(`${a.street}, ${a.municipality}, Slovakia`);
+ if(a.zip&&a.municipality) add(`${a.zip}, ${a.municipality}, Slovakia`);
+ return out;
 }
 
-async function geocode(q){
- const url="https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&addressdetails=1&countrycodes=sk&accept-language=sk&q="+encodeURIComponent(q);
- const r=await fetch(url,{headers:{"Accept":"application/json"}});
- if(!r.ok) throw new Error("HTTP "+r.status);
- return await r.json();
-}
-
-function scoreResult(r, original){
- let s=0;
+function tokenScore(r,a){
  const d=r.address||{};
- if(d.postcode && original.includes(d.postcode)) s+=35;
- if(d.city || d.town || d.village) s+=25;
- if(d.road) s+=25;
- if(d.house_number) s+=15;
- return Math.min(100,s);
+ const display=norm(r.display_name||"");
+ const street=norm(a.street), city=norm(a.municipality), zip=norm(a.zip), house=norm(a.house);
+ let score=0, reasons=[];
+ if(zip && display.includes(zip)){score+=35;reasons.push("PSČ")}
+ if(city && (display.includes(city) || norm(d.city||d.town||d.village||d.municipality).includes(city))){score+=25;reasons.push("obec")}
+ if(street && (display.includes(street) || norm(d.road||"").includes(street))){score+=25;reasons.push("ulica")}
+ if(house && (norm(d.house_number||"")==house || display.includes(" "+house+" ") || display.includes(","+house))){score+=15;reasons.push("číslo")}
+ // Prefer actual address-level results over broad locality results
+ const type=String(r.type||"");
+ if(["house","building","residential","apartments"].includes(type)) score+=8;
+ if(["city","town","village","municipality","administrative"].includes(type)) score-=15;
+ return {score:Math.max(0,Math.min(100,score)),reasons};
 }
 
-start.onclick=async()=>{
- document.getElementById('progressCard').style.display="block";
- document.getElementById('resultsCard').style.display="none";
- output=[]; start.disabled=true; exportBtn.disabled=true;
+async function search(q){
+ const url="https://nominatim.openstreetmap.org/search?format=jsonv2&limit=8&addressdetails=1&accept-language=sk&q="+encodeURIComponent(q);
+ const res=await fetch(url);
+ if(!res.ok) throw new Error("HTTP "+res.status);
+ return await res.json();
+}
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+async function waitIfPaused(){
+ while(paused) await sleep(300);
+}
+
+$("pause").onclick=()=>{
+ paused=!paused;
+ $("pause").textContent=paused?"▶ POKRAČOVAŤ":"Ⅱ POZASTAVIŤ";
+ $("paused").textContent=paused?"áno":"nie";
+};
+
+$("start").onclick=async()=>{
+ if(running)return;
+ running=true; paused=false; output=[];
+ $("start").disabled=true; $("pause").disabled=false; $("export").disabled=true;
+ $("progressCard").style.display="block"; $("resultsCard").style.display="none";
+ $("pause").textContent="Ⅱ POZASTAVIŤ";
+ let limit=Math.min(Math.max(parseInt($("limit").value||30),1),rows.length);
  let ok=0, review=0, fail=0;
 
- for(let i=0;i<rows.length;i++){
-   const original=rows[i]["retazec_Adresa_ok"];
+ for(let i=0;i<limit;i++){
+   await waitIfPaused();
+   const row=rows[i], a=parseAddress(row);
    let candidates=[];
-   try{
-     for(const v of variants(original)){
-       const res=await geocode(v);
+   for(const q of variants(row)){
+     await waitIfPaused();
+     try{
+       const res=await search(q);
        for(const r of res){
-         const score=scoreResult(r,normalize(original));
-         candidates.push({r,score,query:v});
+         const sc=tokenScore(r,a);
+         candidates.push({r,score:sc.score,reasons:sc.reasons,query:q});
        }
-       if(candidates.some(x=>x.score>=90)) break;
-       await new Promise(x=>setTimeout(x,1050));
-     }
-   }catch(e){}
-   candidates.sort((a,b)=>b.score-a.score);
+     }catch(e){}
+     // Respect public geocoder's low request rate.
+     await sleep(1100);
+     if(candidates.some(c=>c.score>=95)) break;
+   }
+   candidates.sort((x,y)=>y.score-x.score);
    const best=candidates[0];
-   const row={...rows[i],
+   const status=!best?"NENÁJDENÉ":best.score>=90?"OK":best.score>=65?"KONTROLA":"SLABÁ ZHODA";
+   const result={...row,
       latitude:best?Number(best.r.lat):"",
       longitude:best?Number(best.r.lon):"",
       geocode_confidence:best?best.score:0,
       matched_address:best?best.r.display_name:"",
       matched_query:best?best.query:"",
-      geocode_status:best?(best.score>=85?"OK":best.score>=60?"KONTROLA":"SLABÁ ZHODA"):"NENÁJDENÉ"
+      match_reasons:best?best.reasons.join(", "):"",
+      geocode_status:status
    };
-   output.push(row);
-   if(!best)fail++; else if(best.score>=85)ok++; else review++;
-   document.getElementById('progress').value=((i+1)/rows.length)*100;
-   document.getElementById('progressText').textContent=`Spracovanie ${i+1} / ${rows.length}`;
-   document.getElementById('stats').textContent=`OK: ${ok} | Kontrola: ${review} | Nenájdené: ${fail}`;
-   if(i%10===0) render();
+   output.push(result);
+   if(status==="OK")ok++; else if(status==="NENÁJDENÉ")fail++; else review++;
+   $("progress").value=((i+1)/limit)*100;
+   $("progressText").textContent=`Spracovanie ${i+1} / ${limit}`;
+   $("ok").textContent=ok; $("review").textContent=review; $("fail").textContent=fail;
+   render();
  }
- render(); start.disabled=false; exportBtn.disabled=false;
+ running=false; $("pause").disabled=true; $("start").disabled=false; $("export").disabled=output.length===0;
+ $("progressText").textContent=`Hotovo: ${output.length} z ${limit}`;
 };
 
+function esc(x){return String(x??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));}
 function render(){
  const sample=output.slice(0,100);
- let h="<table><tr><th>Adresa</th><th>Latitude</th><th>Longitude</th><th>Istota</th><th>Stav</th><th>Nájdená adresa</th></tr>";
+ let h="<table><tr><th>Adresa</th><th>Latitude</th><th>Longitude</th><th>Istota</th><th>Stav</th><th>Zhody</th><th>Nájdená adresa</th></tr>";
  for(const r of sample){
    const cls=r.geocode_status==="OK"?"green":r.geocode_status==="NENÁJDENÉ"?"red":"yellow";
-   h+=`<tr><td>${esc(r.retazec_Adresa_ok)}</td><td>${r.latitude}</td><td>${r.longitude}</td><td>${r.geocode_confidence}%</td><td class="${cls} status">${r.geocode_status}</td><td>${esc(r.matched_address)}</td></tr>`;
+   h+=`<tr><td>${esc(r.ADRESA)}</td><td>${r.latitude}</td><td>${r.longitude}</td><td>${r.geocode_confidence}%</td><td class="${cls} status">${esc(r.geocode_status)}</td><td>${esc(r.match_reasons)}</td><td>${esc(r.matched_address)}</td></tr>`;
  }
- h+="</table><p class='small'>Zobrazených prvých 100 výsledkov. Export obsahuje všetky riadky.</p>";
- document.getElementById('resultsCard').style.display="block";
- document.getElementById('tableWrap').innerHTML=h;
+ h+="</table><p class='small'>Zobrazených je prvých 100 výsledkov. Export obsahuje všetky spracované riadky.</p>";
+ $("resultsCard").style.display="block"; $("tableWrap").innerHTML=h;
 }
-function esc(x){return String(x??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));}
-
-exportBtn.onclick=()=>{
+$("export").onclick=()=>{
  const ws=XLSX.utils.json_to_sheet(output);
  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Geokódované");
- XLSX.writeFile(wb,"geokodovane_adresy.xlsx");
+ XLSX.writeFile(wb,"geokodovane_adresy_test.xlsx");
 };
 </script>
 </body></html>
