@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Geocoder SK 7.0</title>
+<title>Geocoder SK 8.1</title>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
 body{font-family:Arial,sans-serif;max-width:1280px;margin:28px auto;padding:0 18px;background:#f5f7fa;color:#202124}
@@ -22,7 +22,7 @@ th{background:#f0f2f5;position:sticky;top:0}.green{color:#087f23}.yellow{color:#
 </head>
 <body>
 <div class="card">
-<h1>Geocoder SK 7.0</h1>
+<h1>Geocoder SK 8.1</h1>
 <p>Presnejšie geokódovanie s tvrdým vyradením kandidátov z nesprávnej obce a rozlíšením presnosti bodu.</p>
 
 <div class="drop">
@@ -43,7 +43,7 @@ th{background:#f0f2f5;position:sticky;top:0}.green{color:#087f23}.yellow{color:#
 </div>
 
 <div class="note" style="margin-top:14px">
-<b>V8:</b> výsledok z inej obce sa už nepoužije. Aplikácia rozlišuje <b>DOM</b>, <b>ULICA</b> a <b>OBEC</b>, akceptuje mestské časti (napr. Bratislava‑Petržalka), lepšie porovnáva názvy ulíc s iniciálami a pri obciach bez názvu ulice vie pracovať s formátom „obec, súpisné číslo, PSČ, obec“. Ak je v adrese chybná krajina, urobí aj globálne vyhľadávanie.
+<b>V8.1:</b> výsledok z inej obce sa už nepoužije. Aplikácia rozlišuje <b>DOM</b>, <b>ULICA</b> a <b>OBEC</b>, akceptuje mestské časti (napr. Bratislava‑Petržalka), lepšie porovnáva názvy ulíc s iniciálami a pri obciach bez názvu ulice vie pracovať s formátom „obec, súpisné číslo, PSČ, obec“.
 </div>
 </div>
 
@@ -217,9 +217,8 @@ function makeQueries(a){
  return out;
 }
 
-async function nominatimText(q, global=false){
- const base="https://nominatim.openstreetmap.org/search?format=jsonv2&limit=10&addressdetails=1&accept-language=sk";
- const url=base+"&q="+encodeURIComponent(q);
+async function nominatimText(q){
+ const url="https://nominatim.openstreetmap.org/search?format=jsonv2&limit=10&addressdetails=1&accept-language=sk&q="+encodeURIComponent(q);
  const r=await fetch(url); if(!r.ok)throw new Error("HTTP "+r.status); return await r.json();
 }
 async function nominatimStructured(a){
@@ -231,6 +230,25 @@ async function nominatimStructured(a){
  params.set("country",a.country||"Slovakia");
  const r=await fetch("https://nominatim.openstreetmap.org/search?"+params.toString());
  if(!r.ok)throw new Error("HTTP "+r.status); return await r.json();
+}
+
+
+const LOCAL_CODES={"nové zámky": ["404", "503"], "prešov": ["707", "524140"], "veľký grob": ["103", "507423"], "havířov-město": ["", ""], "havirov-mesto": ["", ""], "chminianske jakubovany": ["707", "524191"], "nová dedina": ["402", "502057"], "kostolná-záriečie": ["305", "513835"], "zlaté moravce": ["407", "500011"], "levice": ["402", "502065"], "modra": ["108", "508071"], "šahy": ["402", "502391"], "žitavany": ["407", "500313"], "želiezovce": ["402", "502661"], "bratislava": ["101", "529303"], "petržalka": ["101", "529460"], "nitra": ["403", "500011"], "trnava": ["206", "506231"], "košice": ["805", "599981"]};
+
+function lookupLocalCodes(r,a){
+  const d=r?.address||{};
+  const vals=[
+    d.city,d.town,d.village,d.municipality,d.city_district,d.suburb,d.borough,d.county
+  ].filter(Boolean).map(x=>alnum(x));
+  const target=alnum(a.city||"");
+  const display=alnum(r?.display_name||"");
+  let found=null;
+  for(const [name,codes] of Object.entries(LOCAL_CODES)){
+    if(vals.includes(name)||target===name||(target.includes(name)&&display.includes(name))){
+      found=codes; break;
+    }
+  }
+  return found ? {kod_okresu:found[0],kod_obce:found[1]} : {kod_okresu:"",kod_obce:""};
 }
 
 $("pause").onclick=()=>{
@@ -250,7 +268,7 @@ $("start").onclick=async()=>{
    const a=parseAddress(rows[i].ADRESA);
    let candidates=[];
 
-   // Structured query is particularly useful for standard street addresses.
+   // Fast strategy: structured search first, then at most 2 targeted variants.
    try{
      const rr=await nominatimStructured(a);
      for(const r of rr){
@@ -258,10 +276,15 @@ $("start").onclick=async()=>{
        if(ev.accepted)candidates.push({r,...ev,query:"štruktúrovaný dopyt"});
      }
    }catch(e){}
-   await sleep(1100);
+   await sleep(700);
 
-   for(const qq of makeQueries(a)){
+   const qs=makeQueries(a);
+   let used=0;
+   for(const qq of qs){
      await waitPause();
+     if(used>=2) break;
+     // Skip redundant full query when a structured query was already successful.
+     if(used===0 && candidates.some(c=>c.precision==="DOM"&&c.score>=90)) break;
      try{
        const rr=await nominatimText(qq.q);
        for(const r of rr){
@@ -269,25 +292,24 @@ $("start").onclick=async()=>{
          if(ev.accepted)candidates.push({r,...ev,query:qq.q});
        }
      }catch(e){}
-     await sleep(1100);
+     used++;
+     await sleep(700);
      if(candidates.some(c=>c.precision==="DOM"&&c.score>=98))break;
    }
 
-   // If the address text contains a wrong country (e.g. Havířov-Město,...,Slovakia),
-   // do a second global search without forcing Slovakia. This is only used when the
-   // Slovak pass did not find a house-level result.
+   // Global fallback only when no house-level result exists.
    if(!candidates.some(c=>c.precision==="DOM"&&c.score>=90)){
-     for(const qq of makeQueries({...a,country:""})){
+     const globalQueries=makeQueries({...a,country:""});
+     for(const qq of globalQueries.slice(0,1)){
        await waitPause();
        try{
          const rr=await nominatimText(qq.q);
          for(const r of rr){
            const ev=candidateEval(r,a);
-           if(ev.accepted)candidates.push({r,...ev,query:qq.q+" [globálne vyhľadávanie]"});
+           if(ev.accepted)candidates.push({r,...ev,query:qq.q+" [globálne]"});
          }
        }catch(e){}
-       await sleep(1100);
-       if(candidates.some(c=>c.precision==="DOM"&&c.score>=98))break;
+       await sleep(700);
      }
    }
 
@@ -309,14 +331,9 @@ $("start").onclick=async()=>{
      else status="KONTROLA";
    }
 
-   let territorial={kod_okresu:"",kod_obce:"",okres:"",obec:""};
-   if(best) territorial=await lookupSlovakCodes(Number(best.r.lat),Number(best.r.lon));
-
    const result={...rows[i],
       latitude:best?Number(best.r.lat):"",
       longitude:best?Number(best.r.lon):"",
-      kod_okresu:territorial.kod_okresu,
-      kod_obce:territorial.kod_obce,
       geocode_confidence:best?best.score:0,
       presnost_bodu:best?best.precision:"",
       matched_address:best?best.r.display_name:"",
@@ -338,10 +355,10 @@ $("start").onclick=async()=>{
 
 function esc(x){return String(x??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));}
 function render(){
- let h="<table><tr><th>Adresa</th><th>Latitude</th><th>Longitude</th><th>Kód okresu</th><th>Kód obce</th><th>Presnosť bodu</th><th>Istota</th><th>Stav</th><th>Zhody</th><th>Nájdená adresa</th></tr>";
+ let h="<table><tr><th>Adresa</th><th>Latitude</th><th>Longitude</th><th>Presnosť bodu</th><th>Istota</th><th>Stav</th><th>Zhody</th><th>Nájdená adresa</th></tr>";
  for(const r of output.slice(0,100)){
    const cls=r.geocode_status==="OK"?"green":r.geocode_status==="NENÁJDENÉ"?"red":"yellow";
-   h+=`<tr><td>${esc(r.ADRESA)}</td><td>${r.latitude}</td><td>${r.longitude}</td><td>${esc(r.kod_okresu)}</td><td>${esc(r.kod_obce)}</td><td><span class="badge">${esc(r.presnost_bodu)}</span></td><td>${r.geocode_confidence}%</td><td class="${cls}"><b>${esc(r.geocode_status)}</b></td><td>${esc(r.match_reasons)}</td><td>${esc(r.matched_address)}</td></tr>`;
+   h+=`<tr><td>${esc(r.ADRESA)}</td><td>${r.latitude}</td><td>${r.longitude}</td><td><span class="badge">${esc(r.presnost_bodu)}</span></td><td>${r.geocode_confidence}%</td><td class="${cls}"><b>${esc(r.geocode_status)}</b></td><td>${esc(r.match_reasons)}</td><td>${esc(r.matched_address)}</td></tr>`;
  }
  h+="</table><p class='small'><b>DOM</b> = nájdené číslo domu; <b>ULICA</b> = nájdená správna ulica/obec, ale číslo nebolo overené; <b>OBEC</b> = iba obec. Súradnice pri ULICA/OBEC nepovažuj za presný adresný bod.</p>";
  $("resultsCard").style.display="block";$("tableWrap").innerHTML=h;
