@@ -2,7 +2,7 @@
 <html lang="sk">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Geocoder SK 6.1</title>
+<title>Geocoder SK 6.2</title>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
 body{font-family:Arial,sans-serif;max-width:1250px;margin:28px auto;padding:0 18px;background:#f5f7fa;color:#202124}
@@ -15,10 +15,10 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:8px;borde
 .green{color:#087f23}.yellow{color:#a56b00}.red{color:#b00020}.note{background:#fff8df;border-left:4px solid #d99b00;padding:12px;border-radius:5px;font-size:13px}
 </style></head>
 <body>
-<div class="card"><h1>Geocoder SK 6.1</h1>
+<div class="card"><h1>Geocoder SK 6.2</h1>
 <p>Hľadá adresu cez viacero presných kombinácií a vyhodnocuje kandidátov podľa jednotlivých častí adresy.</p>
 <div class="drop"><input id="file" type="file" accept=".xlsx,.xls,.csv"><p class="small">Vstupný stĺpec: <b>ADRESA</b></p></div>
-<div class="row"><label>Počet na test: <input id="limit" class="field" type="number" min="1" value="30" style="width:90px"></label></div>
+
 <div class="row"><button id="start" disabled>▶ SPUSTIŤ GEOKÓDOVANIE</button><button id="pause" class="secondary" disabled>Ⅱ POZASTAVIŤ</button><button id="export" disabled>⬇ EXPORT</button></div>
 <div class="note" style="margin-top:14px"><strong>Kódy:</strong> ku slovenskej obci sa dopĺňa kód obce (LAU2) a kód okresu. Kódy sa získavajú z verejného číselníkového zdroja; pri nejednoznačnej obci ostanú prázdne a výsledok pôjde na kontrolu.<br><br><strong>Geokódovanie:</strong> stále sa používa viacnásobné vyhľadávanie a kontrola obce/ulice/čísla/PSČ. Oficiálny Register adries MV SR je vedený ako referenčný zdroj adresných bodov; jeho verejné služby zahŕňajú aj získanie údajov podľa atribútov adresy a adresného bodu.</div><div class="note" style="margin-top:14px"><b>V6.1:</b> na jednu adresu sa používajú najviac 2 najdôležitejšie dopyty, aby test nebol zbytočne pomalý. <b>V5:</b> rozpozná aj formát „obec, číslo, PSČ, obec“, nepenalizuje automaticky nesprávne PSČ, hľadá aj adresy bez ulice a pri rozdiele obce/ulice označí výsledok na kontrolu.</div>
 </div>
@@ -194,4 +194,11 @@ $("start").onclick=async()=>{
 function esc(x){return String(x??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]))}
 function render(){let h="<table><tr><th>Adresa</th><th>Kód okresu</th><th>Kód obce</th><th>Latitude</th><th>Longitude</th><th>Istota</th><th>Stav</th><th>Zhody</th><th>Nájdená adresa</th></tr>";for(const r of output){let cl=r.geocode_status==="OK"?"green":r.geocode_status==="NENÁJDENÉ"?"red":"yellow";h+=`<tr><td>${esc(r.ADRESA)}</td><td>${esc(r.kod_okresu)}</td><td>${esc(r.kod_obce)}</td><td>${r.latitude}</td><td>${r.longitude}</td><td>${r.geocode_confidence}%</td><td class="${cl}"><b>${r.geocode_status}</b></td><td>${esc(r.match_reasons)}</td><td>${esc(r.matched_address)}</td></tr>`}h+="</table>";$("resultsCard").style.display="block";$("tableWrap").innerHTML=h}
 $("export").onclick=()=>{const ws=XLSX.utils.json_to_sheet(output),wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Geokódované");XLSX.writeFile(wb,"geokodovane_adresy_test.xlsx")};
-</script></body></html>
+</script>
+<div class="note" style="margin-top:14px">
+<b>Spracovanie väčších súborov:</b> aplikácia teraz umožňuje nahrať a spracovať až <b>2 000 záznamov v jednej dávke</b>.
+Pri súboroch s 16 000 záznamami odporúčame rozdeliť Excel na približne <b>8 dávok po 2 000</b>.
+Pozastavenie môžeš použiť medzi dávkami.
+</div>
+
+</body></html>
