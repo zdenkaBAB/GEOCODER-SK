@@ -43,7 +43,7 @@ th{background:#f0f2f5;position:sticky;top:0}.green{color:#087f23}.yellow{color:#
 </div>
 
 <div class="note" style="margin-top:14px">
-<b>V7:</b> výsledok z inej obce sa už nepoužije. Aplikácia rozlišuje <b>DOM</b>, <b>ULICA</b> a <b>OBEC</b>, akceptuje mestské časti (napr. Bratislava‑Petržalka), lepšie porovnáva názvy ulíc s iniciálami a pri obciach bez názvu ulice vie pracovať s formátom „obec, súpisné číslo, PSČ, obec“.
+<b>V8:</b> výsledok z inej obce sa už nepoužije. Aplikácia rozlišuje <b>DOM</b>, <b>ULICA</b> a <b>OBEC</b>, akceptuje mestské časti (napr. Bratislava‑Petržalka), lepšie porovnáva názvy ulíc s iniciálami a pri obciach bez názvu ulice vie pracovať s formátom „obec, súpisné číslo, PSČ, obec“. Ak je v adrese chybná krajina, urobí aj globálne vyhľadávanie.
 </div>
 </div>
 
@@ -217,8 +217,9 @@ function makeQueries(a){
  return out;
 }
 
-async function nominatimText(q){
- const url="https://nominatim.openstreetmap.org/search?format=jsonv2&limit=10&addressdetails=1&accept-language=sk&q="+encodeURIComponent(q);
+async function nominatimText(q, global=false){
+ const base="https://nominatim.openstreetmap.org/search?format=jsonv2&limit=10&addressdetails=1&accept-language=sk";
+ const url=base+"&q="+encodeURIComponent(q);
  const r=await fetch(url); if(!r.ok)throw new Error("HTTP "+r.status); return await r.json();
 }
 async function nominatimStructured(a){
@@ -272,6 +273,24 @@ $("start").onclick=async()=>{
      if(candidates.some(c=>c.precision==="DOM"&&c.score>=98))break;
    }
 
+   // If the address text contains a wrong country (e.g. Havířov-Město,...,Slovakia),
+   // do a second global search without forcing Slovakia. This is only used when the
+   // Slovak pass did not find a house-level result.
+   if(!candidates.some(c=>c.precision==="DOM"&&c.score>=90)){
+     for(const qq of makeQueries({...a,country:""})){
+       await waitPause();
+       try{
+         const rr=await nominatimText(qq.q);
+         for(const r of rr){
+           const ev=candidateEval(r,a);
+           if(ev.accepted)candidates.push({r,...ev,query:qq.q+" [globálne vyhľadávanie]"});
+         }
+       }catch(e){}
+       await sleep(1100);
+       if(candidates.some(c=>c.precision==="DOM"&&c.score>=98))break;
+     }
+   }
+
    // Deduplicate by coordinate + display name, then rank precision first, score second.
    const uniq=new Map();
    for(const c of candidates){
@@ -290,9 +309,14 @@ $("start").onclick=async()=>{
      else status="KONTROLA";
    }
 
+   let territorial={kod_okresu:"",kod_obce:"",okres:"",obec:""};
+   if(best) territorial=await lookupSlovakCodes(Number(best.r.lat),Number(best.r.lon));
+
    const result={...rows[i],
       latitude:best?Number(best.r.lat):"",
       longitude:best?Number(best.r.lon):"",
+      kod_okresu:territorial.kod_okresu,
+      kod_obce:territorial.kod_obce,
       geocode_confidence:best?best.score:0,
       presnost_bodu:best?best.precision:"",
       matched_address:best?best.r.display_name:"",
@@ -314,10 +338,10 @@ $("start").onclick=async()=>{
 
 function esc(x){return String(x??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));}
 function render(){
- let h="<table><tr><th>Adresa</th><th>Latitude</th><th>Longitude</th><th>Presnosť bodu</th><th>Istota</th><th>Stav</th><th>Zhody</th><th>Nájdená adresa</th></tr>";
+ let h="<table><tr><th>Adresa</th><th>Latitude</th><th>Longitude</th><th>Kód okresu</th><th>Kód obce</th><th>Presnosť bodu</th><th>Istota</th><th>Stav</th><th>Zhody</th><th>Nájdená adresa</th></tr>";
  for(const r of output.slice(0,100)){
    const cls=r.geocode_status==="OK"?"green":r.geocode_status==="NENÁJDENÉ"?"red":"yellow";
-   h+=`<tr><td>${esc(r.ADRESA)}</td><td>${r.latitude}</td><td>${r.longitude}</td><td><span class="badge">${esc(r.presnost_bodu)}</span></td><td>${r.geocode_confidence}%</td><td class="${cls}"><b>${esc(r.geocode_status)}</b></td><td>${esc(r.match_reasons)}</td><td>${esc(r.matched_address)}</td></tr>`;
+   h+=`<tr><td>${esc(r.ADRESA)}</td><td>${r.latitude}</td><td>${r.longitude}</td><td>${esc(r.kod_okresu)}</td><td>${esc(r.kod_obce)}</td><td><span class="badge">${esc(r.presnost_bodu)}</span></td><td>${r.geocode_confidence}%</td><td class="${cls}"><b>${esc(r.geocode_status)}</b></td><td>${esc(r.match_reasons)}</td><td>${esc(r.matched_address)}</td></tr>`;
  }
  h+="</table><p class='small'><b>DOM</b> = nájdené číslo domu; <b>ULICA</b> = nájdená správna ulica/obec, ale číslo nebolo overené; <b>OBEC</b> = iba obec. Súradnice pri ULICA/OBEC nepovažuj za presný adresný bod.</p>";
  $("resultsCard").style.display="block";$("tableWrap").innerHTML=h;
